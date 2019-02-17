@@ -76,18 +76,104 @@ function ireg(y::Float64,sp::SigmoidalBoth)
   inv(sp.fact)*atanh( (y- sp.gain_m)/sp.dh -1.0 )
 end
 
+# vectorized versions!
+for fname in (:reg,:dreg,:ireg)
+  fname! = Symbol(fname,"!")
+  eval( :(
+    function $fname!(xnew::AbstractVector{Float64},
+            x::AbstractVector{Float64},regu::Regularizer)
+      map!(xx->$fname(xx,regu), xnew, x )
+    end))
+  eval(:(
+    function $fname(x::AbstractVector{Float64},regu::Regularizer)
+      $fname!(similar(x),x,regu)
+    end ))
+end
+
 function gradient_test(x,regu::Regularizer)
   grad_num = Calculus.gradient(xx->reg(xx,regu), x )
   grad_an = dreg(x,regu)
   grad_num,grad_an, 2. * abs((grad_num-grad_an)/(grad_num + grad_an))
 end
 
-for fname in (:reg,:dreg)
-  eval( :(
-    function $fname(mah::Bool)
-      123.4
-    end ))
+struct RegularizerPack
+  elements::NamedTuple
+  allocs::NamedTuple
+  x::Vector{Float64}
+  gradx::Vector{Float64}
+  regus::Vector{Regularizer}
+  indexes::NamedTuple
 end
+
+
+
+function _linear_nonmissing(bu)::Vector{Int64}
+  nd = ndims(bu)
+  @assert nd < 3 "Not tested or generalized for $nd  dimensional arrays!"
+  idx = findall( .!(ismissing.(bu)) )
+  if nd == 1
+    return idx
+  else
+    lin = LinearIndices(bu)
+    return lin[idx]
+  end
+end
+
+function make_empty_selection(elements)
+  function makeone(x)
+    o = similar(x,Union{Missing,Symbol})
+    fill!(o,missing)
+  end
+  NamedTuple{keys(elements)}( map(makeone,values(elements)) )
+end
+function RegularizerPack(elements, selections, regudefs)
+  # all selections should refer to an element
+  for nm in keys(selections)
+    @assert nm in keys(elements)
+  end
+  # easy part, just duplicate elements for the allocs
+  dups = [ similar(x) for x in  values(elements)]
+  allocs = NamedTuple{keys(elements)}(dups)
+  # now, the indexes tuple...
+  names_loc = [ Symbol(k,"_loc") for k in keys(selections)]
+  idx_loc = map(_linear_nonmissing,values(selections))
+  # and the global ones, too!
+  counter=0
+  names_glo = [ Symbol(k,"_glo") for k in keys(selections)]
+  idx_glo = map(idx_loc) do idx
+    o = collect(1:length(idx)) .+ counter
+    counter += length(o)
+    o
+  end
+  names_all = vcat(names_loc,names_glo)
+  idx_all =[idx_loc...,idx_glo...]
+  # put them together in a named tuple
+  indexes =  NamedTuple{Tuple(names_all)}(idx_all)
+  # now I need to assign the regularizers
+  # this means packing!
+  regus = Vector{Any}(undef,counter)
+  _regus_aux = Vector{Symbol}(undef,counter)
+  for (nm,vv) in pairs(selections)
+    nm_glo,nm_loc = Symbol(nm,"_glo") , Symbol(nm,"_loc")
+    idx_glo = getfield(indexes,nm_glo)
+    idx_loc =  getfield(indexes,nm_loc)
+    regusloc = vv[idx_loc]
+    _regus_aux[idx_glo] .= regusloc
+  end
+  for regunm in unique(_regus_aux)
+    @assert regunm in keys(regudefs)
+  end
+  for (i,rr) in enumerate(_regus_aux)
+    regus[i] = getfield(regudefs,rr)
+  end
+
+  x,gradx = [ Vector{Float64}(undef,counter) for _ in 1:2 ]
+
+  # all done!
+  RegularizerPack(elements,allocs,x,gradx, regus,indexes)
+
+end
+
 
 #=
 
