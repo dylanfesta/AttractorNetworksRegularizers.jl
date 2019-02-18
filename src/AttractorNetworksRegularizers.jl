@@ -100,8 +100,9 @@ struct RegularizerPack
   elements::NamedTuple
   allocs::NamedTuple
   x::Vector{Float64}
+  xnnonreg::Vector{Float64}
   gradx::Vector{Float64}
-  regus::Vector{Regularizer}
+  regus::Vector{<:Regularizer}
   indexes::NamedTuple
 end
 
@@ -126,10 +127,39 @@ function make_empty_selection(elements)
   end
   NamedTuple{keys(elements)}( map(makeone,values(elements)) )
 end
+
+
+# adds glo and loc to the symbol name
+_gloloc(nm) = Symbol(nm,"_glo") , Symbol(nm,"_loc")
+
+
+"""
+    RegularizerPack(elements, selections, regudefs)
+Main constructor of a regularizer pack
+
+# inputs
+  + `elements` : named tuple of arrays that are targeted by the optimization
+  + `selections` : named tuples of arrays, same name and size of elements that have a
+      sybol that indicates the regularized, or a missing element.
+      use `make_empty_selection(elements)` to initialize an empty structure
+  + `regudefs`: named tuple that associates the regularizer name to a specific
+    regularizer object. Names should be the same as symbol in `selections`
+
+"""
 function RegularizerPack(elements, selections, regudefs)
+  # type - check the inputs
   # all selections should refer to an element
   for nm in keys(selections)
     @assert nm in keys(elements)
+  end
+  for vv in values(elements)
+    @assert typeof(vv) <: AbstractArray{Float64}
+  end
+  for vv in values(selections)
+    @assert typeof(vv) <: AbstractArray{Union{Missing,Symbol}}
+  end
+  for vv in values(regudefs)
+    @assert typeof(vv) <: Regularizer
   end
   # easy part, just duplicate elements for the allocs
   dups = [ similar(x) for x in  values(elements)]
@@ -151,10 +181,10 @@ function RegularizerPack(elements, selections, regudefs)
   indexes =  NamedTuple{Tuple(names_all)}(idx_all)
   # now I need to assign the regularizers
   # this means packing!
-  regus = Vector{Any}(undef,counter)
+  regus = Vector{Regularizer}(undef,counter)
   _regus_aux = Vector{Symbol}(undef,counter)
   for (nm,vv) in pairs(selections)
-    nm_glo,nm_loc = Symbol(nm,"_glo") , Symbol(nm,"_loc")
+    nm_glo,nm_loc = _gloloc(nm)
     idx_glo = getfield(indexes,nm_glo)
     idx_loc =  getfield(indexes,nm_loc)
     regusloc = vv[idx_loc]
@@ -166,16 +196,179 @@ function RegularizerPack(elements, selections, regudefs)
   for (i,rr) in enumerate(_regus_aux)
     regus[i] = getfield(regudefs,rr)
   end
-
   x,gradx = [ Vector{Float64}(undef,counter) for _ in 1:2 ]
 
   # all done!
   RegularizerPack(elements,allocs,x,gradx, regus,indexes)
+end
 
+Base.length(pr::RegularizerPack) = length(pr.x)
+Base.keys(pr::RegularizerPack) = keys(pr.elements)
+
+# vectorized versions!
+for fname in (:reg,:dreg,:ireg)
+  fname! = Symbol(fname,"!")
+  eval( :(
+    function $fname!(pk::RegularizerPack)
+      @. pk.x = $fname(pk.xnnonreg,pk.regus)
+    end))
+end
+
+function _load_pack!(newelements,pk::RegularizerPack)
+  for (k,vv) in pairs(newelements)
+    k_glo,k_loc = _gloloc(k)
+    idx_loc = getfield(pk.indexes,k_loc)
+    idx_glo = getfield(pk.indexes,k_glo)
+    pk.xnnonreg[idx_glo] .= vv[idx_loc]
+  end
+  nothing
+end
+function _load_pack!(pk::RegularizerPack) = _load_pack(pk.elements,pk)
+
+"""
+Auxiliary function that does the opposite of loading x
+that is: takes the contents of x and writes them in the
+unpacked named tuple.
+It basically transfer the value in the opposite direction
+"""
+function _unload_pack!(newx, pk::RegularizerPack)
+  _x = newx
+  for (k,arr) in pairs(pk.elements)
+    k_glo,k_loc = _gloloc(k)
+    idx_loc = getfield(pk.indexes,k_loc)
+    idx_glo = getfield(pk.indexes,k_glo)
+    # exact same of load, except I invert this!
+    vv[idx_loc] .= _x[idx_glo]
+  end
+  nothing
+end
+
+#=
+"""
+Converts the elements of x using the regularizers specified by the tuple
+at the indexes specified by the other tuple
+"""
+function reg!(y,regu_defs,regu_targ,x)
+for (k,idx) in pairs(regu_targ)
+regu=regu_defs[k]
+reg!(view(y,idx),view(x,idx),regu)
+end
+y
+end
+function dreg!(y,regu_defs,regu_targ,x)
+for (k,idx) in pairs(regu_targ)
+regu=regu_defs[k]
+dreg!(view(y,idx),view(x,idx),regu)
+end
+y
+end
+function reginv!(y,regu_defs,regu_targ,x)
+for (k,idx) in pairs(regu_targ)
+regu=regu_defs[k]
+reginv!(view(y,idx),view(x,idx),regu)
+end
+y
 end
 
 
-#=
+"""
+Auxiliary function: reads the internal unpacked tuple, or the one
+specified, and fills the interal y_alloc vector with the right order
+"""
+function _load_y(y,rp::RegularizerPack,unpacked)
+for (k,arr) in pairs(unpacked)
+idx_loc = rp.indexes_local[k]
+idx_pack = rp.indexes_packed[k]
+y[idx_pack] = arr[idx_loc]
+end
+nothing
+end
+function _load_y(rp::RegularizerPack,unpacked)
+y = rp.y_alloc
+_load_y(y, rp, unpacked)
+end
+function _load_y(rp::RegularizerPack)
+y = rp.y_alloc
+_load_y(y,rp,rp.unpacked)
+nothing
+end
+function _load_y(y::AbstractVector,
+rp::RegularizerPack,unp,symbs::AbstractVector{S}) where S<: Symbol
+for k in symbs
+arr=unp[k]
+idx_loc = rp.indexes_local[k]
+idx_pack = rp.indexes_packed[k]
+y[idx_pack] = arr[idx_loc]
+end
+nothing
+end
+
+"""
+Auxiliary function that does the opposite of loading y
+that is: takes the contents of y and writes them in a dictionary
+It basically transfer the value in the opposite direction
+"""
+function _unload_y(rp::RegularizerPack,unpacked)
+y = rp.y_alloc
+for (k,arr) in pairs(unpacked)
+idx_loc = rp.indexes_local[k]
+idx_pack = rp.indexes_packed[k]
+arr[idx_loc] = y[idx_pack]   # literally the same of load, except I invert this!
+end
+nothing
+end
+function _unload_y(rp::RegularizerPack)
+_unload_y(rp,rp.unpacked)
+nothing
+end
+"""
+Needed for initialization: reads the internal dictionary,
+uses it to produce a parameter vector x
+"""
+function pack(rp::RegularizerPack)
+_load_y(rp)
+reginv!(rp.x_alloc,rp.regu_defs,rp.regu_targets ,rp.y_alloc)
+end
+
+"""
+After a computation of the gradients into the
+arrays in g_unpacked, call this function to  pack the elements
+of the unpacked arrays in the vector specified
+"""
+function g_pack!(g::AbstractArray{T,1},rp::RegularizerPack) where T<:Real
+_load_y(g,rp,rp.g_unpacked)
+end
+function g_pack!(g::AbstractArray{T,1},
+rp::RegularizerPack,symbs::AbstractVector{S}) where {T<:Real,S<:Symbol}
+_load_y(g,rp,rp.g_unpacked,symbs)
+end
+
+"""
+Inverts the contents of the vector x and
+writes them  in the unpacked dictionary
+elements of the packaging
+"""
+function unpack(x::AbstractVector,rp::RegularizerPack)
+copyto!(rp.x_alloc,x)
+reg!(rp.y_alloc,rp.regu_defs,rp.regu_targets , x)
+_unload_y(rp)
+nothing
+end
+
+function unpack_grad(x::AbstractVector,rp::RegularizerPack)
+unpack(x,rp) # this updates x_alloc and y_alloc
+dreg!(rp.g_alloc, rp.regu_defs,rp.regu_targets,rp.x_alloc) # this returns g_alloc
+end
+
+"""
+Constructors that also fills the packed part, and
+returns the inital x vector along with the packed object
+"""
+function RegularizerPack_init(regu_defs, regu_attrib, unpacked)
+rp=RegularizerPack(regu_defs,regu_attrib,unpacked)
+x0 = pack(rp)  # careful, this is also x_alloc... maybe I should make a copy?
+(rp,x0)
+end
 
 
 
@@ -230,8 +423,6 @@ function RegularizerPack(regu_def,
         indexes_packed,g_unpacked, regu_targets, x_alloc,y_alloc,g_alloc)
 end
 
-Base.length(pr::RegularizerPack) = length(pr.x_alloc)
-Base.keys(pr::RegularizerPack) = keys(pr.g_unpacked)
 
 """
 Makes a tuple with same entries as val_dict,
@@ -242,131 +433,6 @@ function make_regus_tuple(val_tuple)
      [ fill!(similar(arr,Union{Missing,Symbol}),missing) for arr in values(val_tuple)] )
 end
 
-"""
-Converts the elements of x using the regularizers specified by the tuple
-at the indexes specified by the other tuple
-"""
-function reg!(y,regu_defs,regu_targ,x)
-    for (k,idx) in pairs(regu_targ)
-        regu=regu_defs[k]
-        reg!(view(y,idx),view(x,idx),regu)
-    end
-    y
-end
-function dreg!(y,regu_defs,regu_targ,x)
-    for (k,idx) in pairs(regu_targ)
-        regu=regu_defs[k]
-        dreg!(view(y,idx),view(x,idx),regu)
-    end
-    y
-end
-function reginv!(y,regu_defs,regu_targ,x)
-    for (k,idx) in pairs(regu_targ)
-        regu=regu_defs[k]
-        reginv!(view(y,idx),view(x,idx),regu)
-    end
-    y
-end
-
-
-"""
-Auxiliary function: reads the internal unpacked tuple, or the one
-    specified, and fills the interal y_alloc vector with the right order
-"""
-function _load_y(y,rp::RegularizerPack,unpacked)
-    for (k,arr) in pairs(unpacked)
-        idx_loc = rp.indexes_local[k]
-        idx_pack = rp.indexes_packed[k]
-        y[idx_pack] = arr[idx_loc]
-    end
-    nothing
-end
-function _load_y(rp::RegularizerPack,unpacked)
-    y = rp.y_alloc
-    _load_y(y, rp, unpacked)
-end
-function _load_y(rp::RegularizerPack)
-    y = rp.y_alloc
-    _load_y(y,rp,rp.unpacked)
-    nothing
-end
-function _load_y(y::AbstractVector,
-        rp::RegularizerPack,unp,symbs::AbstractVector{S}) where S<: Symbol
-    for k in symbs
-        arr=unp[k]
-        idx_loc = rp.indexes_local[k]
-        idx_pack = rp.indexes_packed[k]
-        y[idx_pack] = arr[idx_loc]
-    end
-    nothing
-end
-
-"""
-Auxiliary function that does the opposite of loading y
-that is: takes the contents of y and writes them in a dictionary
-It basically transfer the value in the opposite direction
-"""
-function _unload_y(rp::RegularizerPack,unpacked)
-    y = rp.y_alloc
-    for (k,arr) in pairs(unpacked)
-        idx_loc = rp.indexes_local[k]
-        idx_pack = rp.indexes_packed[k]
-        arr[idx_loc] = y[idx_pack]   # literally the same of load, except I invert this!
-    end
-    nothing
-end
-function _unload_y(rp::RegularizerPack)
-    _unload_y(rp,rp.unpacked)
-    nothing
-end
-"""
-Needed for initialization: reads the internal dictionary,
-    uses it to produce a parameter vector x
-"""
-function pack(rp::RegularizerPack)
-    _load_y(rp)
-    reginv!(rp.x_alloc,rp.regu_defs,rp.regu_targets ,rp.y_alloc)
-end
-
-"""
-After a computation of the gradients into the
-arrays in g_unpacked, call this function to  pack the elements
-of the unpacked arrays in the vector specified
-"""
-function g_pack!(g::AbstractArray{T,1},rp::RegularizerPack) where T<:Real
-    _load_y(g,rp,rp.g_unpacked)
-end
-function g_pack!(g::AbstractArray{T,1},
-        rp::RegularizerPack,symbs::AbstractVector{S}) where {T<:Real,S<:Symbol}
-    _load_y(g,rp,rp.g_unpacked,symbs)
-end
-
-"""
-Inverts the contents of the vector x and
-writes them  in the unpacked dictionary
-elements of the packaging
-"""
-function unpack(x::AbstractVector,rp::RegularizerPack)
-    copyto!(rp.x_alloc,x)
-    reg!(rp.y_alloc,rp.regu_defs,rp.regu_targets , x)
-    _unload_y(rp)
-    nothing
-end
-
-function unpack_grad(x::AbstractVector,rp::RegularizerPack)
-    unpack(x,rp) # this updates x_alloc and y_alloc
-    dreg!(rp.g_alloc, rp.regu_defs,rp.regu_targets,rp.x_alloc) # this returns g_alloc
-end
-
-"""
-Constructors that also fills the packed part, and
-returns the inital x vector along with the packed object
-"""
-function RegularizerPack_init(regu_defs, regu_attrib, unpacked)
-    rp=RegularizerPack(regu_defs,regu_attrib,unpacked)
-    x0 = pack(rp)  # careful, this is also x_alloc... maybe I should make a copy?
-    (rp,x0)
-end
 
 function gradient_test(rp::RegularizerPack,x::AbstractVector)
     @assert length(rp) == length(x)

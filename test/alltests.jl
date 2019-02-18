@@ -34,7 +34,7 @@ B = randn(50)
 C = fill(-3.,88)
 
 mythings = (A=A,B=B,C=C)
-myregudefs  = (nope = AA.NoRegu , plus = AA.SigmoidalPlus(4.0,10.))
+myregudefs  = (nope = AA.NoRegu() , plus = AA.SigmoidalPlus(4.0,10.))
 
 myselections = AA.make_empty_selection(mythings)
 myselections.A[1,:] .= :nope
