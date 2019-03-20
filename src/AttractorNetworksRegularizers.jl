@@ -80,8 +80,8 @@ end
 for fname in (:reg,:dreg,:ireg)
   fname! = Symbol(fname,"!")
   eval( :(
-    function $fname!(xnew::AbstractVector{Float64},
-            x::AbstractVector{Float64},regu::Regularizer)
+    function $fname!(xnew::AbstractVector{Float64}, x::AbstractVector{Float64},
+                        regu::Regularizer)
       map!(xx->$fname(xx,regu), xnew, x )
     end))
   eval(:(
@@ -90,36 +90,115 @@ for fname in (:reg,:dreg,:ireg)
     end ))
 end
 
-function gradient_test(x,regu::Regularizer)
+function gradient_test(x::Real,regu::Regularizer)
   grad_num = Calculus.gradient(xx->reg(xx,regu), x )
   grad_an = dreg(x,regu)
-  grad_num,grad_an, 2. * abs((grad_num-grad_an)/(grad_num + grad_an))
+  grad_num,grad_an, 2.0abs((grad_num-grad_an)/(grad_num + grad_an))
 end
 
-struct RegularizerPack
-  elements::NamedTuple
-  allocs::NamedTuple
-  x::Vector{Float64}
-  xnnonreg::Vector{Float64}
-  gradx::Vector{Float64}
-  regus::Vector{<:Regularizer}
-  indexes::NamedTuple
+#=
+Assignment is a named tuple of indexes.
+names refer to arrays of another tuple,
+plus suffix _loc _glo
+_loc refers to the position of the selected elements on the tuple (linear index)
+_glo refers to the position of the respective element on a global 1D vector
+that will be used for optimization.
+
+Plan: one full assignment covers all the optimized variables,
+however there can be "regional" assignments smaller in size
+that can be used for "regional" operations over the elements.
+
+A function ensures that the global indices of the regional assignment still point
+at the correct positions of the global vector. 
+=#
+
+# appends glo and loc to the symbol name
+_gloloc(nm::Symbol) = Symbol(nm,"_glo") , Symbol(nm,"_loc")
+function _gloloc(v::AbstractVector{Symbol})
+  glo,loc = copy(v) , copy(v)
+  for i in eachindex(v)
+    glo[i],loc[i] = _gloloc(v[i])
+  end
+  glo,loc
 end
 
-
-
-function _linear_nonmissing(bu)::Vector{Int64}
-  nd = ndims(bu)
-  @assert nd < 3 "Not tested or generalized for $nd  dimensional arrays!"
+# linear indexes of nonmissing values
+function get_nonmissing(bu::AbstractVector)::Vector{Int64}
+  findall( .!(ismissing.(bu)) )
+end
+# converts cartesian index to linear index
+function get_nonmissing(bu::AbstractMatrix)::Vector{Int64}
   idx = findall( .!(ismissing.(bu)) )
-  if nd == 1
-    return idx
-  else
-    lin = LinearIndices(bu)
-    return lin[idx]
+  lin = LinearIndices(bu)
+  lin[idx]
+end
+function get_nonmissing(m::AbstractArray)
+  error("It only works on vector and matrices, for now!")
+end
+# see large comment above
+function make_assignment(elements,selector)
+  for nm in keys(selections)
+    @assert nm in keys(elements)
+  end
+  names_loc,names_glo = _gloloc(keys(selector))
+  idx_loc = map(get_nonmissing,values(selector))
+  # global: one index for each local element
+  idx_glo = let  lgs = length.(idx_loc)
+    whole = collect(1:sum(lgs))
+    [splice!(whole,1:l) for l in lgs]
+  end
+  names_all = vcat(names_loc,names_glo)
+  idx_all =vcat(idx_loc, idx_glo)
+  # put them together in a named tuple
+  NamedTuple{Tuple(names_all)}(idx_all)
+end
+
+"""
+    globalize(assignent_reg, assignment_cap)
+
+modifies the global idexes of regional assignment
+so that they are in line with the "capital" assignment
+The local indexes of regional assignment MUST be present in the
+capital assignment
+"""
+function globalize(assignent_reg, assignment_cap)
+  # extract the relevant names of keys
+  isloc(s) = occursin(r"\_loc\b",String(s))
+  keys_loc = filter(isloc, keys(assignent_reg))
+  keys_glo = map(keys_loc) do k
+    Symbol(String(k)[1:end-4]*"_glo")
+  end
+  for klocglo in zip(keys_loc,keys_glob)
+    # I extract the indexes
+    reg_loc,reg_glo =[ assignent_reg[k] for k in klocglo ]
+    cap_loc,cap_glo =[ assignent_cap[k] for k in klocglo ]
+    # find the position of reg local
+    # in cap local, replace reg global with the
+    # cap global for that index
+    for (k,idxreg) in enumerate(reg_loc)
+      _idxcap = findfirst(idxreg .== cap_loc)
+      @assert !isnothing(_idxcap)
+      reg_glo[k] = cap_glo[_idxcap]
+    end
   end
 end
 
+
+
+struct RegularizerPack
+  elements::NamedTuple # the elements that are packed, all arrays
+  allocs::NamedTuple  # space used for gradients and stuff, same size as elements
+  x::Vector{Float64}  # variables after regularization
+  xnnonreg::Vector{Float64} # variables before regularization
+  gradx::Vector{Float64}  # gradient of regularizer w.r.t. xnonreg
+  regus::Vector{Regularizer}  # regularizes, element by element
+  indexes::NamedTuple  # all the indexing goes here
+end
+
+
+# takes a named tuple of arrays
+# returns tuple with same keys, but where the arrays are
+# of type Union{Missing,Symbol} and initialized with missings
 function make_empty_selection(elements)
   function makeone(x)
     o = similar(x,Union{Missing,Symbol})
@@ -129,9 +208,6 @@ function make_empty_selection(elements)
 end
 
 
-# adds glo and loc to the symbol name
-_gloloc(nm) = Symbol(nm,"_glo") , Symbol(nm,"_loc")
-
 
 """
     RegularizerPack(elements, selections, regudefs)
@@ -139,8 +215,9 @@ Main constructor of a regularizer pack
 
 # inputs
   + `elements` : named tuple of arrays that are targeted by the optimization
-  + `selections` : named tuples of arrays, same name and size of elements that have a
-      sybol that indicates the regularized, or a missing element.
+  + `selections` : named tuples of arrays of type `Union{Missing,Symbol}`,
+      missing elements are ignored, symbols should match with the keys in
+      `regudef` and indicate with regularizer will be used
       use `make_empty_selection(elements)` to initialize an empty structure
   + `regudefs`: named tuple that associates the regularizer name to a specific
     regularizer object. Names should be the same as symbol in `selections`
@@ -165,18 +242,19 @@ function RegularizerPack(elements, selections, regudefs)
   dups = [ similar(x) for x in  values(elements)]
   allocs = NamedTuple{keys(elements)}(dups)
   # now, the indexes tuple...
-  names_loc = [ Symbol(k,"_loc") for k in keys(selections)]
+  names_loc,names_glo = _gloloc(keys(selections))
+  # names_loc = [ _gloloc(k)[2] Symbol(k,"_loc") for k in keys(selections)]
+  # names_glo = [ Symbol(k,"_glo") for k in keys(selections)]
   idx_loc = map(_linear_nonmissing,values(selections))
   # and the global ones, too!
   counter=0
-  names_glo = [ Symbol(k,"_glo") for k in keys(selections)]
   idx_glo = map(idx_loc) do idx
     o = collect(1:length(idx)) .+ counter
     counter += length(o)
     o
   end
   names_all = vcat(names_loc,names_glo)
-  idx_all =[idx_loc...,idx_glo...]
+  idx_all =vcat(idx_loc, idx_glo)
   # put them together in a named tuple
   indexes =  NamedTuple{Tuple(names_all)}(idx_all)
   # now I need to assign the regularizers
@@ -201,9 +279,8 @@ function RegularizerPack(elements, selections, regudefs)
   # all done!
   RegularizerPack(elements,allocs,x,gradx, regus,indexes)
 end
-
-Base.length(pr::RegularizerPack) = length(pr.x)
-Base.keys(pr::RegularizerPack) = keys(pr.elements)
+Base.length(p::RegularizerPack) = length(p.x)
+Base.keys(p::RegularizerPack) = keys(p.elements)
 
 # vectorized versions!
 for fname in (:reg,:dreg,:ireg)
