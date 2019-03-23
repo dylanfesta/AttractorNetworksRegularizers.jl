@@ -1,9 +1,10 @@
 
 using Revise
-using BenchmarkTools
 using AttractorNetworksRegularizers ; const AA = AttractorNetworksRegularizers
 using LinearAlgebra
-using Plots
+# using BenchmarkTools
+# using Plots
+using EponymTuples
 
 ##
 # _regu = AA.SigmoidalPlus(3.0,3.)
@@ -15,7 +16,7 @@ x0 = range(-3.;stop=3,length=500)   |> collect
 plot(x0,AA.reg(x0,_regu),leg=false)
 
 AA.ireg( AA.reg(2.01,_regu) , _regu )
-AA.gradient_test(-1., _regu)
+AA.gradient_test(0.0001, _regu)
 
 @code_warntype AA.reg!(fill(0.0,3) ,[1,2,0.0],_regu)
 
@@ -33,7 +34,7 @@ A = rand(10,10)
 B = randn(50)
 C = fill(-3.,88)
 
-mythings = (A=A,B=B,C=C)
+mythings =  @eponymtuple(A,B,C)
 myregudefs  = (nope = AA.NoRegu() , plus = AA.SigmoidalPlus(4.0,10.))
 
 myselections = AA.make_empty_selection(mythings)
@@ -42,9 +43,12 @@ myselections.A[:,4] .= :plus
 myselections.B[1:4] .= :nope
 myselections.C[18:49] .= :plus
 
+findall(.!ismissing.(A))
+
+(nglobs, test_assignments) = AA.make_assignment(mythings,myselections)
 
 whatevs = AA.RegularizerPack(mythings,myselections,myregudefs)
-
+##
 size(whatevs.C)
 
 boh = NamedTuple{(:ciao,:uff)}([12,"lalal"])

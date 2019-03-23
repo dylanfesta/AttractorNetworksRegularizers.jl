@@ -114,13 +114,14 @@ at the correct positions of the global vector.
 
 # appends glo and loc to the symbol name
 _gloloc(nm::Symbol) = Symbol(nm,"_glo") , Symbol(nm,"_loc")
-function _gloloc(v::AbstractVector{Symbol})
+function _gloloc(v::AbstractVector)
   glo,loc = copy(v) , copy(v)
   for i in eachindex(v)
     glo[i],loc[i] = _gloloc(v[i])
   end
   glo,loc
 end
+_gloloc(v) = _gloloc([v...])
 
 key_isglo(k) = occursin(r"\_glo\b",String(k))
 key_isloc(k) = occursin(r"\_loc\b",String(k))
@@ -142,18 +143,19 @@ function get_nonmissing(m::AbstractArray)
   error("It only works on vector and matrices, for now!")
 end
 # see large comment above
-function make_assignment(elements,selector)
-  for nm in keys(selections)
+function make_assignment(elements,selections)
+  _keys = keys(selections)
+  for nm in _keys
     @assert nm in keys(elements)
   end
-  names_loc,names_glo = _gloloc(keys(selector))
-  idx_loc = map(get_nonmissing,values(selector))
+  _selec = [selections[k] for k in _keys]
+  names_loc,names_glo = _gloloc(_keys)
+  idx_loc = map(get_nonmissing,_selec)
   # global: one index for each local element
   lgs = length.(idx_loc)
   nglo = sum(lgs)
-  idx_glo = let whole = collect(1:sum(lgs))
-    [splice!(whole,1:l) for l in lgs]
-  end
+  whole = collect(1:nglo)
+  idx_glo = [splice!(whole,1:l) for l in lgs]
   names_all = vcat(names_loc,names_glo)
   idx_all =vcat(idx_loc, idx_glo)
   # put them together in a named tuple
@@ -202,11 +204,15 @@ function packing!(v::AbstractVector,elements::NamedTuple,
   isglo(s) = occursin(r"\_glo\b",String(s))
   for (k_glo,idxs) in pairs(assignment)
     if key_isglo(k_glo) && (!isempty(idxs))
-      k_el = key_nosuffix(k)
+      k_el = key_nosuffix(k_glo)
       k_loc = Symbol(k_el,:_loc)
       idx_glo = getfield(assignment,k_glo)
+      @show idx_glo
       idx_loc =  getfield(assignment,k_loc)
       if forward_mode
+        @show size(v) @show size( elements[k_el])
+        @show size(view(v,idx_glo))
+        @show size( view(getfield(elements,k_el), idx_loc) )
         view(v,idx_glo) .= view(getfield(elements,k_el), idx_loc)
       else
         view(getfield(elements,k_el), idx_loc) .= view(v,idx_glo)
@@ -215,7 +221,7 @@ function packing!(v::AbstractVector,elements::NamedTuple,
   end
   nothing
 end
-function unpack!(v,els,as) = packing!(v,els,as,false)
+unpack!(v,els,as) = packing!(v,els,as,false)
 
 
 struct RegularizerPack
@@ -273,7 +279,8 @@ function RegularizerPack(elements, selections, regudefs)
   dups = [ similar(x) for x in  values(elements)]
   allocs = NamedTuple{keys(elements)}(dups)
   # now, the indexes tuple...
-  (nglobs, assignments) = make_assignment(element,selections)
+  (nglobs, assignments) = make_assignment(elements,selections)
+  @info "expected length of packed vector is $nglobs"
   # now I need to assign the regularizers
   # this means packing!
   _regus_aux = Vector{Symbol}(undef,nglobs)
@@ -289,7 +296,9 @@ function RegularizerPack(elements, selections, regudefs)
   #define it
   rpack=RegularizerPack(elements,assignments,allocs,xreg,xnonreg,gradx,regus)
   # initialize it !
-
+  @info "initialzation!"
+  pack_allx_grad!(rpack)
+  rpack
 end
 Base.length(p::RegularizerPack) = length(p.x)
 Base.keys(p::RegularizerPack) = keys(p.elements)
