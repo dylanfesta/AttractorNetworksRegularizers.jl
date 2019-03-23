@@ -113,7 +113,7 @@ at the correct positions of the global vector.
 =#
 
 # appends glo and loc to the symbol name
-_gloloc(nm::Symbol) = Symbol(nm,"_glo") , Symbol(nm,"_loc")
+_gloloc(nm::Symbol) = Symbol(nm,:_glo) , Symbol(nm,:_loc)
 function _gloloc(v::AbstractVector)
   glo,loc = copy(v) , copy(v)
   for i in eachindex(v)
@@ -149,7 +149,7 @@ function make_assignment(elements,selections)
     @assert nm in keys(elements)
   end
   _selec = [selections[k] for k in _keys]
-  names_loc,names_glo = _gloloc(_keys)
+  names_glo,names_loc = _gloloc(_keys)
   idx_loc = map(get_nonmissing,_selec)
   # global: one index for each local element
   lgs = length.(idx_loc)
@@ -207,12 +207,8 @@ function packing!(v::AbstractVector,elements::NamedTuple,
       k_el = key_nosuffix(k_glo)
       k_loc = Symbol(k_el,:_loc)
       idx_glo = getfield(assignment,k_glo)
-      @show idx_glo
       idx_loc =  getfield(assignment,k_loc)
       if forward_mode
-        @show size(v) @show size( elements[k_el])
-        @show size(view(v,idx_glo))
-        @show size( view(getfield(elements,k_el), idx_loc) )
         view(v,idx_glo) .= view(getfield(elements,k_el), idx_loc)
       else
         view(getfield(elements,k_el), idx_loc) .= view(v,idx_glo)
@@ -227,11 +223,11 @@ unpack!(v,els,as) = packing!(v,els,as,false)
 struct RegularizerPack
   elements::NamedTuple # the elements that are packed, all arrays
   assignments::NamedTuple  # Global assignement that regulates the poisitions in x
-  allocs::NamedTuple  # space used for gradients and stuff, same size as elements
-  gradx::Vector{Float64}  # gradient of regularizer w.r.t. xnonreg
   xreg::Vector{Float64}  # variables in regu form
-  xnnonreg::Vector{Float64} # variables in unbound form
+  xnonreg::Vector{Float64} # variables in unbound form
+  xgrad::Vector{Float64}  # gradient of regularizer w.r.t. xnonreg
   regus::Vector{Regularizer}  # regularizes, element by element
+  allocs::NamedTuple  # space used for gradients and stuff, same size as elements
 end
 
 # takes a named tuple of arrays
@@ -280,7 +276,6 @@ function RegularizerPack(elements, selections, regudefs)
   allocs = NamedTuple{keys(elements)}(dups)
   # now, the indexes tuple...
   (nglobs, assignments) = make_assignment(elements,selections)
-  @info "expected length of packed vector is $nglobs"
   # now I need to assign the regularizers
   # this means packing!
   _regus_aux = Vector{Symbol}(undef,nglobs)
@@ -292,15 +287,14 @@ function RegularizerPack(elements, selections, regudefs)
   for (i,rr) in enumerate(_regus_aux)
     regus[i] = getfield(regudefs,rr)
   end
-  xreg,xnonreg,radx = [ Vector{Float64}(undef,nglobs) for _ in 1:3 ]
+  xreg,xnonreg,xgrad = [ Vector{Float64}(undef,nglobs) for _ in 1:3 ]
   #define it
-  rpack=RegularizerPack(elements,assignments,allocs,xreg,xnonreg,gradx,regus)
+  rpack=RegularizerPack(elements,assignments,xreg,xnonreg,xgrad,regus,allocs)
   # initialize it !
-  @info "initialzation!"
   pack_allx_grad!(rpack)
   rpack
 end
-Base.length(p::RegularizerPack) = length(p.x)
+Base.length(p::RegularizerPack) = length(p.xnonreg)
 Base.keys(p::RegularizerPack) = keys(p.elements)
 
 ##
@@ -314,7 +308,7 @@ function pack_allx!(xreg,xnonreg,elements,assignments,regus)
   nothing
 end
 function pack_allx!(rp::RegularizerPack)
-  pack_allx(rp.xreg,rp.xnonreg,rp.elements,rp.assignments,rp.regus)
+  pack_allx!(rp.xreg,rp.xnonreg,rp.elements,rp.assignments,rp.regus)
 end
 function pack_calc_grad!(xgrad, xnonreg, regus)
   @. xgrad = dreg(xnonreg,regus)
@@ -329,15 +323,17 @@ function pack_allx_grad!(rp::RegularizerPack)
 end
 
 function gradient_test(rp::RegularizerPack,x::AbstractVector)
-    fill!(pr.xnonreg ,x)
-    g_an = copy(pack_calc_grad(rp.xgrad,pr.xnonreg,rp.regus)) # careful, this is g_alloc
+    copy!(rp.xnonreg ,x)
+    pack_calc_grad!(rp.xgrad,rp.xnonreg,rp.regus)
+    g_an = copy(rp.xgrad)
     eps_test=1E-8
     # all grads are independent, so I can vectorize
     xpm=copy(x)
     xpm .+= eps_test
-    f_p = map(reg, zip(xpm,rp.regus) )
+    f_p = reg.(xpm,rp.regus)
+    # f_p = map( (x,re)->reg(x,re), zip(xpm,rp.regus) )
     xpm .-= 2eps_test
-    f_m = map(reg, zip(xpm,rp.regus) )
+    f_m = reg.(xpm,rp.regus)
     g_num = @. (f_p-f_m) / (2*eps_test)
     diff_g = @. abs( 2. * (g_num-g_an)/(g_num+g_an) )
     g_num , g_an , diff_g

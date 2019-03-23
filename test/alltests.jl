@@ -2,8 +2,8 @@
 using Revise
 using AttractorNetworksRegularizers ; const AA = AttractorNetworksRegularizers
 using LinearAlgebra
-# using BenchmarkTools
-# using Plots
+using BenchmarkTools
+using Plots
 using EponymTuples
 
 ##
@@ -32,32 +32,23 @@ end
 
 A = rand(10,10)
 B = randn(50)
-C = fill(-3.,88)
+C = fill(7.,88)
 
 mythings =  @eponymtuple(A,B,C)
-myregudefs  = (nope = AA.NoRegu() , plus = AA.SigmoidalPlus(4.0,10.))
+myregudefs  = (nope = AA.NoRegu() , plus = AA.SigmoidalPlus(10.0,2.))
 
 myselections = AA.make_empty_selection(mythings)
-myselections.A[1,:] .= :nope
 myselections.A[:,4] .= :plus
+myselections.A[1,:] .= :nope
 myselections.B[1:4] .= :nope
 myselections.C[18:49] .= :plus
 
-findall(.!ismissing.(A))
-
-(nglobs, test_assignments) = AA.make_assignment(mythings,myselections)
-
-whatevs = AA.RegularizerPack(mythings,myselections,myregudefs)
+test_regupack = AA.RegularizerPack(mythings,myselections,myregudefs)
 ##
-size(whatevs.C)
+xtest  = let n=length(test_regupack)
+  randn(n)
+end
+whatevs  = AA.gradient_test(test_regupack,xtest)
+count(whatevs[2].==1)
 
-boh = NamedTuple{(:ciao,:uff)}([12,"lalal"])
-mah = :ciao
-getfield(boh,mah)
-
-
-boh=Vector{AA.Regularizer}(undef,10)
-boh[1] = AA.NoRegu()
-boh[2] =  myregudefs.plus
-
-boh[1]
+count(test_regupack.regus .== [AA.NoRegu()] )
