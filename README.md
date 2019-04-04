@@ -1,6 +1,8 @@
 # AttractorNetworksRegularizers.jl
 Utility functions for optimization with regularizers
 
-They solve the following problem:   several arrays of parameters, that follow different hard constraints need to be re-parametrized so that they are unconstrained and unbounded.  Also they are packed into a single vector that can be fed to an optimization function.
+In case one needs to optimize many elements contained in various arrays with different hard constraints, this package packs them up into a single vector that can be optimized without constraints by some optimization function.
 
 Gradients of parametrization are also computed, so that can be chained when computing the gradient.  
+
+  

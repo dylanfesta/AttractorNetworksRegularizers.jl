@@ -129,6 +129,12 @@ key_nosuffix(k) = Symbol(String(k)[1:end-4])
 key_toglobal(k) = Symbol(key_nosuffix(k),:_glo)
 key_tolocal(k) = Symbol(key_nosuffix(k),:_loc)
 
+function glo_loc_split(assignments::NamedTuple)
+  locs = filter(key_isloc,assignment)
+  glos = map(key_toglobal,locs)
+  glos,locs
+end
+
 # linear indexes of nonmissing values
 function get_nonmissing(bu::AbstractVector)::Vector{Int64}
   findall( .!(ismissing.(bu)) )
@@ -143,11 +149,8 @@ function get_nonmissing(m::AbstractArray)
   error("It only works on vector and matrices, for now!")
 end
 # see large comment above
-function make_assignment(elements,selections)
+function make_assignment(selections)
   _keys = keys(selections)
-  for nm in _keys
-    @assert nm in keys(elements)
-  end
   _selec = [selections[k] for k in _keys]
   names_glo,names_loc = _gloloc(_keys)
   idx_loc = map(get_nonmissing,_selec)
@@ -163,23 +166,21 @@ function make_assignment(elements,selections)
 end
 
 """
-    globalize(assignent_reg, assignment_cap)
+    globalize(assignment_reg, assignment_cap)
 
 modifies the global idexes of regional assignment
 so that they are in line with the "capital" assignment
 The local indexes of regional assignment MUST be present in the
 capital assignment
 """
-function globalize(assignent_reg, assignment_cap)
-  # extract the relevant names of keys
-  keys_loc = filter(key_isloc, keys(assignent_reg))
-  keys_glo = map(keys_loc) do k
-    Symbol(String(k)[1:end-4]*"_glo")
-  end
-  for klocglo in zip(keys_loc,keys_glob)
+function globalize(assignment_reg, assignment_cap)
+  # separate local and global, take only "regional" elements
+  keys_loc = filter(key_isloc, [keys(assignment_reg)...] )
+  keys_glo = map(key_toglobal, keys_loc)
+  for klocglo in zip(keys_loc,keys_glo)
     # I extract the indexes
-    reg_loc,reg_glo =[ assignent_reg[k] for k in klocglo ]
-    cap_loc,cap_glo =[ assignent_cap[k] for k in klocglo ]
+    reg_loc,reg_glo =[ assignment_reg[k] for k in klocglo ]
+    cap_loc,cap_glo =[ assignment_cap[k] for k in klocglo ]
     # find the position of reg local
     # in cap local, replace reg global with the
     # cap global for that index
@@ -222,7 +223,8 @@ unpack!(v,els,as) = packing!(v,els,as,false)
 
 struct RegularizerPack
   elements::NamedTuple # the elements that are packed, all arrays
-  assignments::NamedTuple  # Global assignement that regulates the poisitions in x
+  selection::NamedTuple # same as elements but select which get packed
+  assignments::NamedTuple  # indexes , poisitions in x and in elements
   xreg::Vector{Float64}  # variables in regu form
   xnonreg::Vector{Float64} # variables in unbound form
   xgrad::Vector{Float64}  # gradient of regularizer w.r.t. xnonreg
@@ -230,9 +232,13 @@ struct RegularizerPack
   allocs::NamedTuple  # space used for gradients and stuff, same size as elements
 end
 
-# takes a named tuple of arrays
-# returns tuple with same keys, but where the arrays are
-# of type Union{Missing,Symbol} and initialized with missings
+"""
+  make_empty_selection(elements)
+`elements` is a named tuple of arrays. Returns a named tuple with same keys, and same
+array size, but where arrays are of type Union{Missing,Symbol}
+and initialized with missings.  This will be the `selections` element in the
+constructor of a `RegularizerPack`.
+"""
 function make_empty_selection(elements)
   function makeone(x)
     o = similar(x,Union{Missing,Symbol})
@@ -256,16 +262,16 @@ Main constructor of a regularizer pack
     regularizer object. Names should be the same as symbol in `selections`
 
 """
-function RegularizerPack(elements, selections, regudefs)
+function RegularizerPack(elements, selection, regudefs)
   # type - check the inputs
-  # all selections should refer to an element
-  for nm in keys(selections)
+  # all selection should refer to an element
+  for nm in keys(selection)
     @assert nm in keys(elements)
   end
   for vv in values(elements)
     @assert typeof(vv) <: AbstractArray{Float64}
   end
-  for vv in values(selections)
+  for vv in values(selection)
     @assert typeof(vv) <: AbstractArray{Union{Missing,Symbol}}
   end
   for vv in values(regudefs)
@@ -275,11 +281,11 @@ function RegularizerPack(elements, selections, regudefs)
   dups = [ similar(x) for x in  values(elements)]
   allocs = NamedTuple{keys(elements)}(dups)
   # now, the indexes tuple...
-  (nglobs, assignments) = make_assignment(elements,selections)
+  (nglobs, assignments) = make_assignment(selection)
   # now I need to assign the regularizers
   # this means packing!
   _regus_aux = Vector{Symbol}(undef,nglobs)
-  packing!(_regus_aux , selections, assignments)
+  packing!(_regus_aux , selection, assignments)
   for regunm in unique(_regus_aux)
     @assert regunm in keys(regudefs)
   end
@@ -289,16 +295,15 @@ function RegularizerPack(elements, selections, regudefs)
   end
   xreg,xnonreg,xgrad = [ Vector{Float64}(undef,nglobs) for _ in 1:3 ]
   #define it
-  rpack=RegularizerPack(elements,assignments,xreg,xnonreg,xgrad,regus,allocs)
+  rpack=RegularizerPack(elements,selection,
+    assignments,xreg,xnonreg,xgrad,regus,allocs)
   # initialize it !
   pack_allx_grad!(rpack)
   rpack
 end
 Base.length(p::RegularizerPack) = length(p.xnonreg)
-Base.keys(p::RegularizerPack) = keys(p.elements)
 
 ##
-
 function pack_allx!(xreg,xnonreg,elements,assignments,regus)
   # first extract the variables from elements, place them in the buffer
   # elements are already regularized!
@@ -338,6 +343,64 @@ function gradient_test(rp::RegularizerPack,x::AbstractVector)
     diff_g = @. abs( 2. * (g_num-g_an)/(g_num+g_an) )
     g_num , g_an , diff_g
 end
+
+
+#simple query of indexes for regularizer pack
+#=
+
+
+indexes_currents_loc = mypack[Local(:currents)]
+indexes_currents_glo = mypack[Global(:currents)]
+
+etc
+
+=#
+
+abstract type PackQuery end
+struct Local <: PackQuery
+  x::Symbol
+  function Local(s::Symbol)
+    new(Symbol(s,:_loc))
+  end
+end
+struct Global <: PackQuery
+  x::Symbol
+  function Global(s::Symbol)
+    new(Symbol(s,:_glo))
+  end
+end
+
+function Base.getindex(rp::RegularizerPack,x)
+  getindex(rp.assignments,x)
+end
+function Base.getindex(rp::RegularizerPack, pq::PackQuery)
+  getindex(rp.assignments, pq.x)
+end
+function Base.keys(rp::RegularizerPack)
+  keys(rp.assignments)
+end
+
+#
+
+"""
+  store_gradient!(rp::RegularizerPack,assignment)
+
+This function is called after the gradient is computed and stored in the
+named tuple `rp.allocs` .  It unpacks the gradient according to the specified
+assignment , multiplies each element by the matching gradient of regularizer
+functions (i.e. `rp.xgrad`), and adds the result to  `g`
+"""
+function add_gradient!(g::AbstractVector,rp::RegularizerPack,assignment::NamedTuple)
+  for _gloloc in zip(glo_loc_split(assignment)...)
+    _ref = key_nosuffix(_gloloc[1])
+    for (_iloc,_iglo) in zip(_gloloc...)
+      gval = rp.allocs[_ref][_iloc]
+      g[_iglo] += gval * rp.xgrad[_iglo]
+    end
+  end
+  return g
+end
+
 
 
 end # module
