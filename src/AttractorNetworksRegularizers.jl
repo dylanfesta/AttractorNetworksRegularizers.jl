@@ -130,7 +130,7 @@ key_toglobal(k) = Symbol(key_nosuffix(k),:_glo)
 key_tolocal(k) = Symbol(key_nosuffix(k),:_loc)
 
 function glo_loc_split(assignments::NamedTuple)
-  locs = filter(key_isloc,assignment)
+  locs = filter(key_isloc,[keys(assignments)...])
   glos = map(key_toglobal,locs)
   glos,locs
 end
@@ -173,7 +173,7 @@ so that they are in line with the "capital" assignment
 The local indexes of regional assignment MUST be present in the
 capital assignment
 """
-function globalize(assignment_reg, assignment_cap)
+function globalize!(assignment_reg, assignment_cap)
   # separate local and global, take only "regional" elements
   keys_loc = filter(key_isloc, [keys(assignment_reg)...] )
   keys_glo = map(key_toglobal, keys_loc)
@@ -218,7 +218,7 @@ function packing!(v::AbstractVector,elements::NamedTuple,
   end
   nothing
 end
-unpack!(v,els,as) = packing!(v,els,as,false)
+unpacking!(v,els,as) = packing!(v,els,as,false)
 
 
 struct RegularizerPack
@@ -310,13 +310,14 @@ function pack_allx!(xreg,xnonreg,elements,assignments,regus)
   packing!(xreg,elements,assignments)
   # now convert!
   @. xnonreg =  ireg(xreg,regus)
-  nothing
+  return nothing
 end
 function pack_allx!(rp::RegularizerPack)
   pack_allx!(rp.xreg,rp.xnonreg,rp.elements,rp.assignments,rp.regus)
 end
 function pack_calc_grad!(xgrad, xnonreg, regus)
   @. xgrad = dreg(xnonreg,regus)
+  return nothing
 end
 
 function pack_allx_grad!(xreg,xnonreg,xgrad,elements,assignments,regus)
@@ -326,6 +327,31 @@ end
 function pack_allx_grad!(rp::RegularizerPack)
    pack_allx_grad!(rp.xreg,rp.xnonreg,rp.xgrad,rp.elements,rp.assignments,rp.regus)
 end
+
+# the input here is xnonreg , that is the current point in the unbounded parameter
+# space, this should be run before computing any objective function over
+# the elements
+function unpack_allx_grad!(xreg,xnonreg,xgrad,elements,assignments,regus)
+  # fill x reg from xnonreg
+  @. xreg = reg(xnonreg,regus)
+  # unpack x reg into elements according to assignment
+  packing!(xreg,elements,assignments,false)
+  # update xgrad
+  @. xgrad = dreg(xnonreg,regus)
+  return nothing
+end
+
+function unpack_allx_grad!(x::AbstractVector,rp::RegularizerPack)
+  copy!(rp.xnonreg,x)
+  unpack_allx_grad!(rp)
+end
+
+function unpack_allx_grad!(rp::RegularizerPack)
+  unpack_allx_grad!(rp.xreg,rp.xnonreg,rp.xgrad,rp.elements,rp.assignments,rp.regus)
+end
+
+
+
 
 function gradient_test(rp::RegularizerPack,x::AbstractVector)
     copy!(rp.xnonreg ,x)
@@ -383,7 +409,7 @@ end
 #
 
 """
-  store_gradient!(rp::RegularizerPack,assignment)
+  add_gradient!(rp::RegularizerPack,assignment)
 
 This function is called after the gradient is computed and stored in the
 named tuple `rp.allocs` .  It unpacks the gradient according to the specified
@@ -391,11 +417,11 @@ assignment , multiplies each element by the matching gradient of regularizer
 functions (i.e. `rp.xgrad`), and adds the result to  `g`
 """
 function add_gradient!(g::AbstractVector,rp::RegularizerPack,assignment::NamedTuple)
-  for _gloloc in zip(glo_loc_split(assignment)...)
-    _ref = key_nosuffix(_gloloc[1])
-    for (_iloc,_iglo) in zip(_gloloc...)
-      gval = rp.allocs[_ref][_iloc]
-      g[_iglo] += gval * rp.xgrad[_iglo]
+  for (sglo,sloc) in zip(glo_loc_split(assignment)...)
+    _ref = key_nosuffix(sloc)
+    for (iglo,iloc) in zip( assignment[sglo],assignment[sloc])
+      gval = rp.allocs[_ref][iloc]
+      g[iglo] += gval * rp.xgrad[iglo]
     end
   end
   return g
