@@ -166,6 +166,42 @@ function make_empty_selection(regu_dict::Dict)
   return out
 end
 
+#=
+The final goal here is to build the gradient of the packed x, for different cost
+ component.  In practice each single cost component might take only a subset of elements.
+ So I use a UnitSelector to specify the subset. Then the key operation is to
+ pack the gradient for that subset, and propagate it.
+=#
+struct UnitSelector{N,R,I}
+  name::Symbol
+  S::BitArray{N}
+  Mg::Array{R,N}
+  loc::Vector{I}
+  glo::Vector{I}
+end
+
+function UnitSelector(name::Symbol,S::BitArray{N},u::RegularizedUnit{N,R,I}) where {N,R,I}
+  loc=I[]
+  glo=I[]
+  for (l,g) in zip(u.loc,u.glo)
+    if S[l]
+      push!(loc,l) ; push!(glo,g)
+  end; end
+  if isempty(loc)
+    @warn "The selector $name is empty! This migth generate errors"
+  end
+  return UnitSelector{N,R,I}(name,S,u.Mg,loc,glo)
+end
+
+function pack_grad_array!(x::Vector{R},sel::UnitSelector{N,R,I}) where {N,R,I}
+  for (g,l) in zip(sel.glo,sel.loc)
+    x[g]=sel.Mg[l]
+  end
+  return nothing
+end
+
+
+
 struct RegularizerPack{R,I}
   # units::Vector{Union{RegularizedUnit{1,R,I},RegularizedUnit{2,R,I}}}
   units::Vector{RegularizedUnit{N,R,I} where N}
@@ -243,18 +279,16 @@ function pack_xandgrad!(rn::RegularizerPack)
   return pack_grad!(rn)
 end
 
-function pack_grad_array!(np::RegularizerPack)
-  for rnu in rn.units
-    pack_grad_array!(rn.xgrad_units,rnu)
+function pack_grad_array!(rp::RegularizerPack)
+  for rnu in rp.units
+    pack_grad_array!(rp.xgrad_units,rnu)
   end
   return nothing
 end
-function pack_grad_array!(rp::RegularizerPack{R,I},units_idx::Vector{I}) where {R,I}
-  for rpu in rp.units[units_idx]
-    pack_grad_array!(rp.xgrad_units,rpu)
-  end
-  return nothing
+function pack_grad_array!(rp::RegularizerPack{R,I},sel::UnitSelector{N,R,I}) where {N,R,I}
+  return pack_grad_array!(rp.xgrad_units,sel)
 end
+
 
 # the input is written on xnonreg ,
 # it regularizes, does the unpacking
@@ -282,37 +316,23 @@ allocation arrays .  It unpacks the gradient according to the specified
 assignment , multiplies each element by the matching gradient of regularizer
 functions (i.e. `rp.xgrad`), and adds the result to  `g`
 """
-function propagate_gradient!(g::Vector{R},rp::RegularizerPack{R,I},
-    unit_idxs::Vector{I}) where {R,I}
-  pack_grad_array!(rp,unit_idxs) # fills rp.xgrad_units
-  for i in global_idx_less(rp,unit_idxs)
+function propagate_gradient!(g::Vector{R},rp::RegularizerPack{R,I}) where {R,I}
+  pack_grad_array!(rp) # fills rp.xgrad_units
+  for i in eachindex(g)
     g[i] += rp.xgrad_units[i] * rp.xgrad[i]
   end
   return nothing
 end
 
-function propagate_gradient!(g::Vector,rp::RegularizerPack)
-  return propagate_gradient!(g,rp,collect(1:length(rp.units)))
-end
-
-"""
-  add_gradient!(rp::RegularizerPack,assignment)
-
-This function is called after the gradient is computed and stored in the
-named tuple `rp.allocs` .  It unpacks the gradient according to the specified
-assignment , multiplies each element by the matching gradient of regularizer
-functions (i.e. `rp.xgrad`), and adds the result to  `g`
-"""
-function add_gradient!(g::AbstractVector,rp::RegularizerPack,assignment::NamedTuple)
-  for (sglo,sloc) in zip(glo_loc_split(assignment)...)
-    _ref = key_nosuffix(sloc)
-    for (iglo,iloc) in zip( assignment[sglo],assignment[sloc])
-      gval = rp.allocs[_ref][iloc]
-      g[iglo] += gval * rp.xgrad[iglo]
-    end
+function propagate_gradient!(g::Vector{R},rp::RegularizerPack{R,I},
+    sel::UnitSelector{N,R,I}) where {N,R,I}
+  pack_grad_array!(rp,sel) # fills rp.xgrad_units
+  for i in sel.glo
+    g[i] += rp.xgrad_units[i] * rp.xgrad[i]
   end
-  return g
+  return nothing
 end
+
 
 
 end # module
