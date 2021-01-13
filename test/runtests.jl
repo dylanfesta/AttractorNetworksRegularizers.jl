@@ -128,6 +128,8 @@ end
   selA2=AA.UnitSelector(:As1,As2,pk.units[1])
   selA2c=AA.UnitSelector(:As1c,As2c,pk.units[1])
   selB =  AA.UnitSelector(:Bs,isfinite.(B0),pk.units[2])
+  # test the empty case
+  @test isempty(@test_logs (:warn,) AA.UnitSelector(:Az,falses(size(A)),pk.units[1]))
   #setup complete
   AA.pack_xandgrad!(pk)
   # constructor

@@ -179,6 +179,8 @@ struct UnitSelector{N,R,I}
   loc::Vector{I}
   glo::Vector{I}
 end
+Base.isempty(us::UnitSelector) = isempty(us.glo)
+Base.isempty(us::RegularizedUnit) = isempty(us.glo) 
 
 function UnitSelector(name::Symbol,S::BitArray{N},u::RegularizedUnit{N,R,I}) where {N,R,I}
   loc=I[]
