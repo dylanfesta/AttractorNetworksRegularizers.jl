@@ -193,6 +193,16 @@ function UnitSelector(name::Symbol,S::BitArray{N},u::RegularizedUnit{N,R,I}) whe
   return UnitSelector{N,R,I}(name,S,u.Mg,loc,glo)
 end
 
+function UnitSelector(name::Symbol,u::RegularizedUnit{N,R,I}) where {N,R,I}
+  S=trues(size(u.M))
+  return UnitSelector(name,S,u)
+end
+function UnitSelector(u::RegularizedUnit{N,R,I}) where {N,R,I}
+  name=u.name
+  return UnitSelector(name,u)
+end
+
+
 function pack_grad_array!(x::Vector{R},sel::UnitSelector{N,R,I}) where {N,R,I}
   for (g,l) in zip(sel.glo,sel.loc)
     x[g]=sel.Mg[l]

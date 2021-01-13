@@ -130,7 +130,11 @@ end
   selB =  AA.UnitSelector(:Bs,isfinite.(B0),pk.units[2])
   #setup complete
   AA.pack_xandgrad!(pk)
-  # numeric first
+  # constructor
+  selBB = AA.UnitSelector(pk.units[2])
+  @test all( selBB.loc .== selB.loc)
+  @test all( selBB.glo .== selB.glo)
+  # numeric gradient first
   g_num = similar(pk.xnonreg)
   for i in eachindex(g_num)
     g_num[i] = Calculus.gradient(pk.regus[i],pk.xnonreg[i])
