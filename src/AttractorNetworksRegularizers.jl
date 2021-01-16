@@ -141,7 +141,7 @@ function RegularizedUnit(name::Symbol,A::Array{R,N},
     A_regus::Array{Union{Missing,Symbol},N}; offset::Integer=0) where {N,R}
   loc=find_nonmissing(A_regus)
   glo=offset .+ collect(1:length(loc))
-  return RegularizedUnit{N,R,typeof(loc[1])}(name,A,similar(A),loc,glo)
+  return RegularizedUnit(name,A,similar(A),loc,glo)
 end
 function RegularizedUnit(name::Symbol,A::Array{<:Real,N},
     A_regus::Array{Union{Missing,Symbol},N},pre::RegularizedUnit) where N
@@ -224,8 +224,6 @@ function pack_grad_array!(x::Vector{R},sel::AbstractUnit{N,R,I}) where {N,R,I}
   return nothing
 end
 
-
-
 struct RegularizerPack{R,I}
   # units::Vector{Union{RegularizedUnit{1,R,I},RegularizedUnit{2,R,I}}}
   units::Vector{RegularizedUnit{N,R,I} where N}
@@ -243,18 +241,13 @@ function RegularizerPack(dic_m::Dict{Symbol,Array{R}},
     dic_regu::Dict{Symbol,Array{Union{Missing,Symbol}}},
     dic_regu_type::Dict{Symbol,Regularizer{R}}) where R
   # create both number units and symbol units
-  kall=collect(keys(dic_m))
+  units =Vector{RegularizedUnit{N,R,typeof(0)} where N}(undef,0)
+  units_reg = Vector{RegularizedUnit{N,Union{Missing,Symbol},typeof(0)} where N}(undef,0)
   myoff=0
-  units=map(kall) do k
-    ret=RegularizedUnit(k,dic_m[k],dic_regu[k];offset=myoff)
-    myoff+=length(ret)
-    ret
-  end
-  myoff=0
-  units_reg=map(kall) do k
-    ret=RegularizedUnit(k,dic_regu[k],dic_regu[k];offset=myoff)
-    myoff+=length(ret)
-    ret
+  for k in keys(dic_regu)
+    push!(units,RegularizedUnit(k,dic_m[k],dic_regu[k];offset=myoff))
+    push!(units_reg,RegularizedUnit(k,dic_regu[k],dic_regu[k];offset=myoff))
+    myoff+=length(units[end])
   end
   ntot=sum(length.(units))
   xreg=Vector{R}(undef,ntot)
