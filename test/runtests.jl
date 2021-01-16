@@ -1,4 +1,3 @@
-
 using AttractorNetworksRegularizers ; const AA = AttractorNetworksRegularizers
 using Test
 using Calculus

@@ -110,7 +110,19 @@ function ireg(x::AbstractVector{R},reg::Regularizer{R}) where R
 end
 
 
-struct RegularizedUnit{N,R,I}
+abstract type AbstractUnit{N,R,I} end
+Base.Broadcast.broadcastable(x::AbstractUnit)=Ref(g)
+
+function get_unit(nm::Symbol,us::Vector{V}) where V<:AbstractUnit
+  idx=findfirst(u->u.name==nm,us)
+  if isnothing(idx)
+    error("element $nm not found!")
+  end
+  return us[idx]
+end
+
+
+struct RegularizedUnit{N,R,I} <: AbstractUnit{N,R,I}
   name::Symbol
   M::Array{R,N}
   Mg::Array{R,N} #allocated space for gradient
@@ -172,7 +184,7 @@ The final goal here is to build the gradient of the packed x, for different cost
  So I use a UnitSelector to specify the subset. Then the key operation is to
  pack the gradient for that subset, and propagate it.
 =#
-struct UnitSelector{N,R,I}
+struct UnitSelector{N,R,I} <: AbstractUnit{N,R,I}
   name::Symbol
   S::BitArray{N}
   Mg::Array{R,N}
@@ -180,7 +192,7 @@ struct UnitSelector{N,R,I}
   glo::Vector{I}
 end
 Base.isempty(us::UnitSelector) = isempty(us.glo)
-Base.isempty(us::RegularizedUnit) = isempty(us.glo) 
+Base.isempty(us::RegularizedUnit) = isempty(us.glo)
 
 function UnitSelector(name::Symbol,S::BitArray{N},u::RegularizedUnit{N,R,I}) where {N,R,I}
   loc=I[]
@@ -205,7 +217,7 @@ function UnitSelector(u::RegularizedUnit{N,R,I}) where {N,R,I}
 end
 
 
-function pack_grad_array!(x::Vector{R},sel::UnitSelector{N,R,I}) where {N,R,I}
+function pack_grad_array!(x::Vector{R},sel::AbstractUnit{N,R,I}) where {N,R,I}
   for (g,l) in zip(sel.glo,sel.loc)
     x[g]=sel.Mg[l]
   end
@@ -225,8 +237,11 @@ struct RegularizerPack{R,I}
 end
 Base.length(rp::RegularizerPack) = sum(length.(rp.units))
 
+get_unit(nm::Symbol,rp::RegularizerPack)=get_unit(nm,rp.units)
+
 function RegularizerPack(dic_m::Dict{Symbol,Array{R}},
-    dic_regu,dic_regu_type) where R
+    dic_regu::Dict{Symbol,Array{Union{Missing,Symbol}}},
+    dic_regu_type::Dict{Symbol,Regularizer{R}}) where R
   # create both number units and symbol units
   kall=collect(keys(dic_m))
   myoff=0
@@ -249,6 +264,7 @@ function RegularizerPack(dic_m::Dict{Symbol,Array{R}},
     pack!(xsymb,u)
   end
   regus = map(s->getindex(dic_regu_type,s), xsymb)
+  regus=convert(Vector{Regularizer{R}},regus) # make sure it is the generic type
   RegularizerPack(units,xreg,xnonreg,xgrad,xgrad_units,regus)
 end
 
@@ -297,7 +313,7 @@ function pack_grad_array!(rp::RegularizerPack)
   end
   return nothing
 end
-function pack_grad_array!(rp::RegularizerPack{R,I},sel::UnitSelector{N,R,I}) where {N,R,I}
+function pack_grad_array!(rp::RegularizerPack{R,I},sel::AbstractUnit{N,R,I}) where {N,R,I}
   return pack_grad_array!(rp.xgrad_units,sel)
 end
 
@@ -314,9 +330,9 @@ function unpack_reguandgrad!(rn::RegularizerPack)
   unpack!(rn)
   return pack_grad!(rn)
 end
-function unpack_reguandgrad!(rn::RegularizerPack{R,I},x::Vector{R}) where {R,I}
-  copy!(nr.xnonreg,x)
-  return unpack_reguandgrad!(rn)
+function unpack_reguandgrad!(rp::RegularizerPack{R,I},x::Vector{R}) where {R,I}
+  copy!(rp.xnonreg,x)
+  return unpack_reguandgrad!(rp)
 end
 
 
@@ -337,14 +353,13 @@ function propagate_gradient!(g::Vector{R},rp::RegularizerPack{R,I}) where {R,I}
 end
 
 function propagate_gradient!(g::Vector{R},rp::RegularizerPack{R,I},
-    sel::UnitSelector{N,R,I}) where {N,R,I}
+    sel::AbstractUnit{N,R,I}) where {N,R,I}
   pack_grad_array!(rp,sel) # fills rp.xgrad_units
   for i in sel.glo
     g[i] += rp.xgrad_units[i] * rp.xgrad[i]
   end
   return nothing
 end
-
 
 
 end # module
