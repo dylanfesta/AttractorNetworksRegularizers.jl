@@ -113,6 +113,131 @@ function ireg(x::AbstractVector{R},reg::Regularizer{R}) where R
 end
 
 
+struct RegularizedUnit{D,N, R<:Number}
+  M::Array{R,D}
+  Mg::Array{R,D}
+  regularizers::NTuple{N,Regularizer{R}}
+  globals::NTuple{N,Int64}
+  locals::NTuple{N,Int64}
+  xs::NTuple{N,Vector{R}}
+  ys::NTuple{N,Vector{R}}
+  gs::NTuple{N,Vector{R}}
+end
+
+# move values from global vector to M or Mg , and other way round
+
+function partial_pack!(x_glo::Vector{R},ru::RegularizedUnit{D,N,R}) where {D,N,R}
+  for (x,glob) in zip(ru.xs,ru.globals)
+    for (k,g) in enumerate(glob)
+      x_glo[g] = x[k]
+    end
+  end
+  return nothing
+end
+function partial_unpack!(x_glo::Vector{R},ru::RegularizedUnit{D,N,R}) where {D,N,R}
+  for (x,glob) in zip(ru.xs,ru.globals)
+    for (k,g) in enumerate(glob)
+      x[k] = x_glo[g]
+    end
+  end
+  return nothing
+end
+function partial_packgrad!(grad_glo::Vector{R},ru::RegularizedUnit{D,N,R}) where {D,N,R}
+  for (g,glob) in zip(ru.gs,ru.globals)
+    for (k,g) in enumerate(glob)
+      grad_glo[g] = g[k]
+    end
+  end
+  return nothing
+end
+
+function local_pack!(ru::RegularizedUnit)
+  for (y,loc) in zip(ru.ys,ru.locals)
+    for (k,l) in enumerate(loc)
+      y[k] = ru.M[l]
+    end
+  end
+  return nothing
+end
+function local_unpack!(ru::RegularizedUnit)
+  for (y,loc) in zip(ru.ys,ru.locals)
+    for (k,l) in enumerate(loc)
+      ru.M[l] = y[k]
+    end
+  end
+  return nothing
+end
+function local_packgrad!(ru::RegularizedUnit)
+  for (g,loc) in zip(ru.gs,ru.locals)
+    for (k,l) in enumerate(loc)
+      g[k] = ru.Mg[l]
+    end
+  end
+  return nothing
+end
+
+# compute regularized functions
+function reg!(ru::RegularizedUnit)
+  for (reg,x,y) in zip(ru.regularizers,ru.xs,ru.ys)
+    reg!(y,x,reg)
+  end
+  return nothing
+end
+function dreg!(ru::RegularizedUnit)
+  for (reg,x,y) in zip(ru.regularizers,ru.xs,ru.ys)
+    dreg!(y,x,reg)
+  end
+  return nothing
+end
+function ireg!(ru::RegularizedUnit)
+  for (reg,x,y) in zip(ru.regularizers,ru.xs,ru.ys)
+    ireg!(x,y,reg)
+  end
+  return nothing
+end
+
+function pack!(x_glo::Vector{R},ru::RegularizedUnit{D,N,R}) where {D,N,R}
+  # copies the M elements to y 
+  local_pack!(ru)
+  #  x = ireg(y) , now x is the unbound variable
+  ireg!(ru)
+  # copies the xs into x_glo
+  partial_pack!(x_glo,ru)
+  return nothing
+end
+function unpack!(x_glo::Vector{R},ru::RegularizedUnit{D,N,R}) where {D,N,R}
+  # copies the x_glo to x
+  partial_unpack!(x_glo,ru)
+  # y = reg(x) , compute the bound variable
+  reg!(ru)
+  # copies the y into the M array
+  local_unpack!(ru)
+  return nothing
+end
+
+function packgrad_chain!(g_glo::Vector{R},ru::RegularizedUnit{D,N,R}) where {D,N,R}
+  # copies the Mg elements to g
+  local_packgrad!(ru)
+  # chain rule  ****(TODO)****
+  # copies g to g_glo
+  partial_packgrad!(g_glo,ru)
+  return nothing
+end
+
+
+
+struct RegularizerPack{N}
+  units::NTuple{N,RegularizedUnit}
+  x::Vector{R}  # variables in unbound form
+  y::Vector{R}  # variables in regularized form
+  xgrad::Vector{R}  # gradient of regularizer w.r.t. y
+  xgrad_units::Vector{R}  # allocated space for gradient of variables
+  regus::Vector{Regularizer{R}}  # regularizers, element by element
+end
+Base.length(rp::RegularizerPack) = sum(length.(rp.units))
+
+
+#=
 abstract type AbstractUnit{N,R,I} end
 Base.Broadcast.broadcastable(x::AbstractUnit)=Ref(g)
 
@@ -123,6 +248,8 @@ function get_unit(nm::Symbol,us::Vector{V}) where V<:AbstractUnit
   end
   return us[idx]
 end
+
+
 
 
 struct RegularizedUnit{N,R,I} <: AbstractUnit{N,R,I}
@@ -356,6 +483,6 @@ function propagate_gradient!(g::Vector{R},rp::RegularizerPack{R,I},
   end
   return nothing
 end
-
+=#
 
 end # module
