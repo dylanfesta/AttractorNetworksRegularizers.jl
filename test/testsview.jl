@@ -1,5 +1,4 @@
-
-using Pkg ; Pkg.activate(joinpath(@__DIR__(),".."))
+push!(LOAD_PATH, abspath(@__DIR__,".."))
 using AttractorNetworksRegularizers ; const AA = AttractorNetworksRegularizers
 using LinearAlgebra, StatsBase, Statistics
 using Calculus
@@ -25,8 +24,6 @@ function plotvs(x::AbstractArray{<:Real},y::AbstractArray{<:Real})
   plot!(plt,identity,range(lm...;length=3);linestyle=:dash,color=:yellow)
   return plt
 end
-
-
 
 ##
 AA.pack_xandgrad!(pk)

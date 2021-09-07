@@ -4,6 +4,14 @@ using Calculus
 abstract type Regularizer{R} end
 Base.Broadcast.broadcastable(g::Regularizer)=Ref(g)
 
+
+struct NoRegu{R} <: Regularizer{R}  end
+@inline function (sp::NoRegu{R})(x::R) where R
+  return x
+end
+dreg(x::R,sp::NoRegu{R}) where R = one(R)
+ireg(x::R,sp::NoRegu{R}) where R = x
+
 struct SigmoidalPlus{R} <: Regularizer{R}
     gain::R
     steepness::R
@@ -48,12 +56,7 @@ end
 @inline function ireg(y::R,sp::SigmoidalMinus{R}) where R
     return atanh(-y/sp.p1 - 1.)/sp.pr
 end
-struct NoRegu{R} <: Regularizer{R}  end
-@inline function (sp::NoRegu{R})(x::R) where R
-  return x
-end
-dreg(x::R,sp::NoRegu{R}) where R = one(R)
-ireg(x::R,sp::NoRegu{R}) where R = x
+
 
 struct SigmoidalBoth{R} <: Regularizer{R}
     gain_p::R
