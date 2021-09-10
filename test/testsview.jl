@@ -26,32 +26,53 @@ function plotvs(x::AbstractArray{<:Real},y::AbstractArray{<:Real})
 end
 
 ##
-AA.pack_xandgrad!(pk)
-# numeric first
-g_num = similar(pk.xnonreg)
-for i in eachindex(g_num)
-  g_num[i] = Calculus.gradient(pk.regus[i],pk.xnonreg[i])
+
+
+A = rand(100,100)
+B = randn(50)
+C = .- rand(3,122)
+
+regp = AA.SigmoidalPlus(10.0,2.)
+regp2 = AA.NoRegu()
+
+regp4A = let _A = falses(size(A))
+  for i in eachindex(_A)
+    if rand(Bool)
+      _A[i] = true
+    end
+  end
+  _A
 end
-# now analytic
-for u in pk.units
-  fill!(u.Mg,0.333)
+regp24A = let _A = falses(size(A))
+  for i in eachindex(_A)
+    if (!regp4A[i]) && (rand() > 0.6)  # must not superimpose with previous
+      _A[i]=true
+    end
+  end
+  _A
 end
-g_an1=fill(-0.789,length(pk))
-myfix(x) = (x + 0.789)/0.333
+reguA = AA.RegularizedUnit(A,[(regp,regp4A),(regp2,regp24A)])
+
+A[regp4A] .= 8.888
+A[regp24A] .= NaN
+
+# matrix elements sent to ys
+AA.local_pack!(reguA)
+
+@test all(reguA.ys[1] .== 8.888)
+@test all(isnan.(reguA.ys[2]))
+@test count(isnan.(A)) == length(reguA.ys[2])
+
+# revert
+reguA.ys[1] .= 0.0
+reguA.ys[2] .= -123.
+AA.local_unpack!(reguA)
+
+@test all(iszero.(A[regp4A]))
+@test all(A[regp24A] .== -123.0)
+
 ##
 
-# add B first
-AA.propagate_gradient!(g_an1,pk,selB)
-AA.propagate_gradient!(g_an1,pk,selA1)
-@test all(isapprox.(g_num,myfix.(g_an1);atol=0.01))
-plotvs(g_num,myfix.(g_an1))
+AA.in_bounds(0.5,regp)
 
-g_an1=fill(-0.789,length(pk))
-# add B first
-AA.propagate_gradient!(g_an1,pk,selB)
-# selection is only partial
-AA.propagate_gradient!(g_an1,pk,selA2)
-@test !all(isapprox.(g_num,myfix.(g_an1);atol=0.01))
-# slection should be full
-AA.propagate_gradient!(g_an1,pk,selA2c)
-@test all(isapprox.(g_num, myfix.(g_an1) ;atol=0.01))
+0 < 0.5 < regp.gain

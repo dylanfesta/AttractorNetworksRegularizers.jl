@@ -12,7 +12,7 @@ end
   x0 = range(-3.;stop=3,length=500)
   for regu in ( AA.SigmoidalPlus(3.0,3.),
       AA.SigmoidalMinus(3.0,3.),AA.NoRegu{typeof(0.0)}(), AA.SigmoidalBoth(10.,-20.,30.))
-    # inver
+    # invert
     rx = regu.(x0)
     @test all(isapprox.(AA.ireg(rx,regu),x0;atol=0.001))
     # gradient
@@ -20,6 +20,56 @@ end
     @test all(ab->isapprox(ab...;atol=0.01),gt)
   end
 end
+
+
+@testset "Packing" begin
+  A = rand(100,100)
+  B = randn(50)
+  C = .- rand(3,122)
+
+  regp = AA.SigmoidalPlus(10.0,2.)
+  regp2 = AA.NoRegu()
+
+  regp4A = let _A = falses(size(A))
+    for i in eachindex(_A)
+      if rand(Bool)
+        _A[i] = true
+      end
+    end
+    _A
+  end
+  regp24A = let _A = falses(size(A))
+    for i in eachindex(_A)
+      if (!regp4A[i]) && (rand() > 0.6)  # must not superimpose with previous
+        _A[i]=true
+      end
+    end
+    _A
+  end
+  reguA = AA.RegularizedUnit(A,[(regp,regp4A),(regp2,regp24A)])
+
+  A[regp4A] .= 8.888
+  A[regp24A] .= NaN
+
+  # matrix elements sent to ys
+  AA.local_pack!(reguA)
+
+  @test all(reguA.ys[1] .== 8.888)
+  @test all(isnan.(reguA.ys[2]))
+  @test count(isnan.(A)) == length(reguA.ys[2])
+
+  # revert
+  reguA.ys[1] .= 0.0
+  reguA.ys[2] .= -123.
+  AA.local_unpack!(reguA)
+
+  @test all(iszero.(A[regp4A]))
+  @test all(A[regp24A] .== -123.0)
+end
+
+
+
+#=
 
 @testset "Packing" begin
   A = rand(100,100)
@@ -162,3 +212,5 @@ end
   AA.propagate_gradient!(g_an1,pk,selA2c)
   @test all(isapprox.(g_num, myfix.(g_an1) ;atol=0.01))
 end
+
+=#
