@@ -1,4 +1,5 @@
 module AttractorNetworksRegularizers
+export RegularizerPack
 
 abstract type Regularizer{R} end
 Base.Broadcast.broadcastable(g::Regularizer)=Ref(g)
@@ -13,7 +14,7 @@ NoRegu() = NoRegu{Float64}()
 dreg(x::R,sp::NoRegu{R}) where R = one(R)
 ireg(x::R,sp::NoRegu{R}) where R = x
 
-in_bounds(x::Real,r::NoRegu) = true
+in_bounds(x::Real,r::NoRegu) = isfinite(x)
 
 
 struct SigmoidalPlus{R} <: Regularizer{R}
@@ -242,6 +243,7 @@ struct RegularizerPack{N,R<:Real}
   x_global::Vector{R}  # variables in unbound form
   g_global::Vector{R}
 end
+Base.length(rp::RegularizerPack) = length(rp.x_global)
 
 
 function pack!(regp::RegularizerPack)
@@ -304,10 +306,20 @@ function regularizers_in_bounds(ru::RegularizedUnit)
   return true
 end
 
+# globals of different regularized units should be different!
+# this applies an offset to all elements to shift them forward
+function fix_global_offset(ru::RegularizedUnit,glob_offset::Integer)
+  for glo in ru.globals
+    glo .+= glob_offset
+  end
+  return nothing
+end
+
 
 # M , and pairs (Regularizer, Mask)
-function RegularizedUnit(M::Array{R},rlist::Vector{Tuple{Re,B}};
-    global_offset::Integer=0) where {R<:Real,Re<:Regularizer{R},B<:BitArray}
+function RegularizedUnit(M::Array{R},
+    (rlist::Tuple{Re,B} where {Re<:Regularizer{R},B<:BitArray} )...;
+    global_offset::Integer=0) where {R<:Real}
   # check sizes and indexes
   _check_mats(M,getindex.(rlist,2))
   rlist = filter(rl-> count(rl[2])>0 ,rlist)
@@ -333,11 +345,40 @@ function RegularizedUnit(M::Array{R},rlist::Vector{Tuple{Re,B}};
   return ret
 end
 
-function RegularizerPack(units)
+# if no bit array specified, just regularize all
+function RegularizedUnit(M::Array{R},reg::Regularizer{R};
+    global_offset::Integer=0) where R<:Real
+  return RegularizedUnit(M,(reg,trues(size(M))); global_offset=global_offset)
+end
+
+
+function good_global_counter(rp::RegularizerPack)
+  gl=Vector{Int64}[]
+  for unit in rp.units
+    for glo in unit.globals
+      push!(gl,glo)
+    end
+  end
+  gl_all = sort(vcat(gl...))
+  return length(gl_all) == gl_all[end] == length(rp)
+end
+
+function RegularizerPack(units...)
   ntot = sum(length.(units))
   x_global = Vector{Float64}(undef,ntot)
   g_global = similar(x_global)
-  return RegularizerPack(Tuple(units),x_global,g_global)
+  ret = RegularizerPack(units,x_global,g_global)
+  if ! good_global_counter(ret)
+    c=0
+    for unit in units
+      fix_global_offset(unit,c)
+      c += length(unit)
+    end
+  end
+  @assert good_global_counter(ret)
+  return ret
 end
+
+
 
 end # of module

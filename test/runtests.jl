@@ -46,7 +46,7 @@ end
     end
     _A
   end
-  reguA = AA.RegularizedUnit(A,[(regp,regp4A),(regp2,regp24A)])
+  reguA = AA.RegularizedUnit(A,(regp,regp4A),(regp2,regp24A))
 
   A[regp4A] .= 8.888
   A[regp24A] .= NaN
@@ -67,7 +67,45 @@ end
   @test all(A[regp24A] .== -123.0)
 end
 
+@testset "Full Pack" begin
+  A = rand(100,100)
+  B = randn(50)
+  C = -10 .*  rand(3,122)
 
+  regp = AA.SigmoidalPlus(10.0,2.)
+  regno = AA.NoRegu()
+  regm =  AA.SigmoidalMinus(10.0,2.)
+
+  regp4A = let _A = falses(size(A))
+    for i in eachindex(_A)
+      if rand(Bool)
+        _A[i] = true
+      end
+    end
+    _A
+  end
+  regp24A = let _A = falses(size(A))
+    for i in eachindex(_A)
+      if (!regp4A[i]) && (rand() > 0.6)  # must not superimpose with previous
+        _A[i]=true
+      end
+    end
+    _A
+  end
+  reguA = AA.RegularizedUnit(A,(regp,regp4A),(regno,regp24A))
+  reguB = AA.RegularizedUnit(B,regno)
+  reguC = AA.RegularizedUnit(C,regm)
+  packed_all = AA.RegularizerPack(reguA,reguB,reguC)
+  # matrix to packed test (no regu)
+  A[reguA.locals[2]] .= 8.88
+  AA.pack!(packed_all)
+  @test all(packed_all.x_global[reguA.globals[2]] .== 8.88)
+  # packed to matrix test (sigmoidal regu)
+  packed_all.x_global[reguC.globals[1]] .= 12.123
+  AA.unpack!(packed_all)
+  @test all(reguC.xs[1] .== 12.123)
+  @test all(isapprox.(C[reguC.locals[1]],regm(12.123)))
+end
 
 #=
 
