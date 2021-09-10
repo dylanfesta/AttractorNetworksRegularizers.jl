@@ -1,5 +1,4 @@
 module AttractorNetworksRegularizers
-using Calculus
 
 abstract type Regularizer{R} end
 Base.Broadcast.broadcastable(g::Regularizer)=Ref(g)
