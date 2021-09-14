@@ -46,7 +46,7 @@ end
     end
     _A
   end
-  reguA = AA.RegularizedUnit(A,(regp,regp4A),(regp2,regp24A))
+  reguA = AA.RegularizedUnit(A,similar(A),(regp,regp4A),(regp2,regp24A))
 
   A[regp4A] .= 8.888
   A[regp24A] .= NaN
@@ -92,9 +92,9 @@ end
     end
     _A
   end
-  reguA = AA.RegularizedUnit(A,(regp,regp4A),(regno,regp24A))
-  reguB = AA.RegularizedUnit(B,regno)
-  reguC = AA.RegularizedUnit(C,regm)
+  reguA = AA.RegularizedUnit(A,similar(A),(regp,regp4A),(regno,regp24A))
+  reguB = AA.RegularizedUnit(B,similar(B),regno)
+  reguC = AA.RegularizedUnit(C,similar(C),regm)
   packed_all = AA.RegularizerPack(reguA,reguB,reguC)
   # matrix to packed test (no regu)
   A[reguA.locals[2]] .= 8.88

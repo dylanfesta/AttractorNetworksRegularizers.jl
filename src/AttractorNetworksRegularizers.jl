@@ -67,15 +67,16 @@ in_bounds(y::R,r::SigmoidalMinus{R}) where R = (-r.gain < y < zero(R))
 
 
 struct SigmoidalBoth{R} <: Regularizer{R}
-    gain_p::R
     gain_m::R
+    gain_p::R
     steepness::R
     dh::R
     fact::R
-    function SigmoidalBoth(gp::R,gm::R,steep::R) where R<:Real
-        dh = (gp-gm)/2
-        fact = steep/dh
-        new{R}(gp,gm,steep,dh,fact)
+    function SigmoidalBoth(gm::R,gp::R,steep::R) where R<:Real
+      @assert gm<gp "first argument should be the lower bound"
+      dh = (gp-gm)/2
+      fact = steep/dh
+      new{R}(gm,gp,steep,dh,fact)
     end
 end
 
@@ -89,7 +90,7 @@ end
 @inline function ireg(y::R,sp::SigmoidalBoth{R}) where R
   return atanh( (y- sp.gain_m)/sp.dh -1.0 )/sp.fact
 end
-in_bounds(y::R,r::SigmoidalBoth{R}) where R = (-r.gain_m < y < r.gain_p)
+in_bounds(y::R,r::SigmoidalBoth{R}) where R = (r.gain_m < y < r.gain_p)
 
 # vectorized versions!
 @inline function reg!(dest::AbstractVector{R},x::AbstractVector{R},
@@ -156,9 +157,9 @@ function partial_unpack!(x_glo::Vector{R},ru::RegularizedUnit{D,N,R}) where {D,N
   return nothing
 end
 function partial_packgrad!(grad_glo::Vector{R},ru::RegularizedUnit{D,N,R}) where {D,N,R}
-  for (g,glob) in zip(ru.gs,ru.globals)
+  for (gra,glob) in zip(ru.gs,ru.globals)
     for (k,g) in enumerate(glob)
-      grad_glo[g] = g[k]
+      grad_glo[g] = gra[k]
     end
   end
   return nothing
@@ -240,32 +241,36 @@ end
 
 struct RegularizerPack{N,R<:Real}
   units::NTuple{N,RegularizedUnit}
-  x_global::Vector{R}  # variables in unbound form
+  x_global::Vector{R}  # variables in unbound form (can be bypassed)
   g_global::Vector{R}
 end
 Base.length(rp::RegularizerPack) = length(rp.x_global)
 
 
-function pack!(regp::RegularizerPack)
+# bypass x_global
+function pack!(x_global::Vector{<:Real},regp::RegularizerPack)
   for u in regp.units
-    pack!(regp.x_global,u)
+    pack!(x_global,u)
   end
   return nothing
 end
+pack!(regp::RegularizerPack) = pack!(regp.x_global,regp)
 
-function unpack!(regp::RegularizerPack)
+function unpack!(x_global::Vector{<:Real},regp::RegularizerPack)
   for u in regp.units
-    unpack!(regp.x_global,u)
+    unpack!(x_global,u)
   end
   return nothing
 end
+unpack!(regp::RegularizerPack) = unpack!(regp.x_global,regp)
 
-function pack_gradient_chain!(regp::RegularizerPack)
+function pack_gradient_chain!(g_global::Vector{<:Real},regp::RegularizerPack)
   for u in regp.units
-    unpack!(regp.g_global,u)
+    packgrad_chain!(g_global,u)
   end
   return nothing
 end
+pack_gradient_chain!(regp::RegularizerPack) = pack_gradient_chain!(regp.g_global,regp)
 
 #######################
 # constructors!
@@ -317,14 +322,13 @@ end
 
 
 # M , and pairs (Regularizer, Mask)
-function RegularizedUnit(M::Array{R},
+function RegularizedUnit(M::Array{R},Mg::Array{R},
     (rlist::Tuple{Re,B} where {Re<:Regularizer{R},B<:BitArray} )...;
     global_offset::Integer=0) where {R<:Real}
   # check sizes and indexes
   _check_mats(M,getindex.(rlist,2))
   rlist = filter(rl-> count(rl[2])>0 ,rlist)
   @assert !isempty(rlist)
-  Mg = similar(M)
   regularizers = Tuple(r[1] for r in rlist)
   ns = map(r->count(r[2]),rlist)
   npre = global_offset
@@ -346,11 +350,14 @@ function RegularizedUnit(M::Array{R},
 end
 
 # if no bit array specified, just regularize all
-function RegularizedUnit(M::Array{R},reg::Regularizer{R};
+function RegularizedUnit(M::Array{R},Mg::Array{R},reg::Regularizer{R};
     global_offset::Integer=0) where R<:Real
-  return RegularizedUnit(M,(reg,trues(size(M))); global_offset=global_offset)
+  return RegularizedUnit(M,Mg,(reg,trues(size(M))); global_offset=global_offset)
 end
 
+function regularizers_in_bounds(rp::RegularizerPack)
+  return all(u->regularizers_in_bounds(u),rp.units)
+end
 
 function good_global_counter(rp::RegularizerPack)
   gl=Vector{Int64}[]
@@ -376,6 +383,7 @@ function RegularizerPack(units...)
     end
   end
   @assert good_global_counter(ret)
+  @assert regularizers_in_bounds(ret)
   return ret
 end
 
